@@ -15,7 +15,6 @@ import {
   businessLimiter,
   usersLimiter
 } from './middlewares/rateLimiter';
-import paymentController from './controllers/payment.controller'; // Assuming paymentController is an ES module
 import routes from './routes/v1'; // Assuming routes is an ES module
 import { errorConverter, errorHandler } from './middlewares/error'; // Assuming error is an ES module
 import ApiError from './utils/ApiError'; // Assuming ApiError is an ES module
@@ -27,7 +26,6 @@ import { initEmailSequenceCron } from './cron/email-sequence.cron';
 
 // Use body-parser to retrieve the raw body as a buffer
 import bodyParser from 'body-parser';
-import webhookController from './controllers/webhook.controller';
 
 const xss = require('xss-clean');
 const Sentry = require('@sentry/node');
@@ -43,9 +41,6 @@ if (config.env !== 'test') {
 app.use(helmet());
 
 // webhook
-// app.post('/webhook', bodyParser.raw({ type: 'application/json' }), webhookController);
-app.post('/v1/payments/webhook', express.raw({ type: 'application/json' }), paymentController.handleWebhook);
-
 // parse json request body
 app.use(express.json());
 
@@ -156,57 +151,5 @@ app.use(errorConverter);
 
 // handle error
 app.use(errorHandler);
-
-// Initialize email sequence cron jobs
-initEmailSequenceCron();
-logger.info('Email sequence cron jobs initialized');
-
-// Log that the content scheduler has been initialized
-logger.info('Content scheduler initialized in app');
-
-// Check Redis connection without blocking app startup
-(async function checkRedisConnection() {
-  try {
-    const redisConfig = {
-      host: config.redis.host || 'localhost', 
-      port: config.redis.port || 6379,
-      hasPassword: !!config.redis.password
-    };
-    
-    logger.info(`Checking Redis connection at ${redisConfig.host}:${redisConfig.port}`);
-    
-    const redisClient = createClient({
-      url: `redis://${redisConfig.hasPassword ? ':xxx@' : ''}${redisConfig.host}:${redisConfig.port}`
-    });
-    
-    // Set up event handlers
-    redisClient.on('error', (err) => {
-      logger.error(`Redis connection check failed: ${err.message}`, {
-        redisHost: redisConfig.host,
-        redisPort: redisConfig.port,
-        error: err.stack
-      });
-    });
-    
-    // Connect with timeout
-    const connectionPromise = redisClient.connect();
-    const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), 5000);
-    });
-    
-    await Promise.race([connectionPromise, timeoutPromise]);
-    
-    logger.info(`Redis connection check successful at ${redisConfig.host}:${redisConfig.port}`);
-    
-    // Close the connection since this is just a check
-    await redisClient.quit();
-  } catch (error: any) {
-    logger.error(`Redis connection check failed: ${error.message}`, { 
-      redis: config.redis.host,
-      error: error.stack
-    });
-    logger.warn('Application will continue starting up, but Redis-dependent features may not work properly');
-  }
-})();
 
 export default app;

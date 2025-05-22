@@ -1,11 +1,8 @@
 import express from 'express';
 import authRoute from './auth.route';
-import userRoute from './user.route';
-import docsRoute from './docs.route';
-import adminRoute from './admin.route';
-
-import config from '../../config/config';
-import path from 'path';
+import weatherRoute from './weather.route';
+import favoritesRoute from './favorites.route';
+import llmRoute from './llm.route';
 
 const router = express.Router();
 
@@ -15,32 +12,21 @@ const defaultRoutes = [
     route: authRoute,
   },
   {
-    path: '/users',
-    route: userRoute,
+    path: '/weather',
+    route: weatherRoute,
   },
   {
-    path: '/admin',
-    route: adminRoute,
+    path: '/favorites',
+    route: favoritesRoute,
   },
-];
-
-const devRoutes = [
-  // routes available only in development mode
   {
-    path: '/docs',
-    route: docsRoute,
+    path: '/llm',
+    route: llmRoute,
   },
 ];
 
 defaultRoutes.forEach((route) => {
   router.use(route.path, route.route);
 });
-
-/* istanbul ignore next */
-if (config.env === 'development') {
-  devRoutes.forEach((route) => {
-    router.use(route.path, route.route);
-  });
-}
 
 export default router;

@@ -1,13 +1,11 @@
-// src/types/express.ts
-import { Request } from 'express';
-
-export interface User {
-  id: string;
-  email: string;
-  name?: string;
-  role: string;
-}
-
-export interface AuthRequest extends Request {
-  user?: User;
-}
+  import { Request } from 'express';
+  
+  export interface AuthenticatedUser {
+    id: number;
+    email: string;
+    name?: string;
+  }
+  
+  export interface AuthRequest extends Request {
+    user?: AuthenticatedUser;
+  }
