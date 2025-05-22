@@ -1,4 +1,4 @@
-// src/services/weather-scraper.service.ts
+// src/services/weather-scraper.service.ts - Updated for actual Weather.com login form
 import puppeteer, { Browser, Page } from 'puppeteer';
 import * as cheerio from 'cheerio';
 import axios from 'axios';
@@ -6,12 +6,14 @@ import config from '../config/config';
 import logger from '../config/logger';
 import { WeatherData } from '../types/weather.types';
 
-// Extracted constants to reduce duplication
+// Constants
 const TEMP_SELECTORS = [
   '[data-testid="TemperatureValue"]',
   '.CurrentConditions--tempValue--MHmYY',
   '.today-daypart-temp',
   '[data-testid="wxTempLabel"]',
+  '.temp',
+  '.temperature-value',
 ];
 
 const CONDITION_SELECTORS = [
@@ -19,6 +21,8 @@ const CONDITION_SELECTORS = [
   '.CurrentConditions--phraseValue--mZC_p',
   '.today-daypart-wxphrase',
   '[data-testid="wxPhrase"]',
+  '.condition',
+  '.weather-phrase',
 ];
 
 const CITY_MAPPINGS: Record<string, string> = {
@@ -37,10 +41,15 @@ class WeatherScraperService {
   async init(): Promise<void> {
     if (!this.browser) {
       this.browser = await puppeteer.launch({
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        headless: "new", // Use new headless mode
+        args: [
+          '--no-sandbox', 
+          '--disable-setuid-sandbox',
+          '--disable-blink-features=AutomationControlled',
+          '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        ],
       });
-      logger.info('Puppeteer browser initialized');
+      logger.info('Puppeteer browser initialized with enhanced stealth');
     }
   }
 
@@ -50,34 +59,132 @@ class WeatherScraperService {
       return false;
     }
 
+    logger.info(`Attempting Weather.com login for: ${config.weatherCom.username}`);
+    
     if (!this.browser) await this.init();
     const page = await this.browser!.newPage();
 
     try {
-      await page.goto('https://weather.com/signin', {
+      // Set realistic browser environment
+      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+      await page.setViewport({ width: 1366, height: 768 });
+
+      // Navigate to login page
+      logger.info('Navigating to Weather.com login page...');
+      await page.goto('https://weather.com/login', {
         waitUntil: 'networkidle2',
         timeout: 30000,
       });
 
-      await page.waitForSelector('#email', { timeout: 10000 });
-      await page.type('#email', config.weatherCom.username!);
-      await page.type('#password', config.weatherCom.password!);
+      // Wait for the login form to load
+      await page.waitForSelector('input[type="email"], input[name="email"]', { timeout: 15000 });
+      
+      // Clear any existing content in email field and type new email
+      logger.info('Filling email field...');
+      const emailSelector = 'input[type="email"], input[name="email"]';
+      await page.click(emailSelector);
+      await page.keyboard.down('Control');
+      await page.keyboard.press('a');
+      await page.keyboard.up('Control');
+      await page.type(emailSelector, config.weatherCom.username!);
 
-      await Promise.all([
-        page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }),
-        page.click('button[type="submit"]'),
-      ]);
+      // Wait a moment for form to update
+      await page.waitForTimeout(1000);
 
+      // Fill password field
+      logger.info('Filling password field...');
+      const passwordSelector = 'input[type="password"], input[name="password"]';
+      await page.waitForSelector(passwordSelector, { timeout: 10000 });
+      await page.click(passwordSelector);
+      await page.keyboard.down('Control');
+      await page.keyboard.press('a');
+      await page.keyboard.up('Control');
+      await page.type(passwordSelector, config.weatherCom.password!);
+
+      // Wait for form validation
+      await page.waitForTimeout(1500);
+
+      // Click the login button
+      logger.info('Clicking login button...');
+      const loginButtonSelectors = [
+        'button:contains("Log in")',
+        'button[type="submit"]',
+        '.btn-primary',
+        '[data-testid="submit"]',
+        'input[type="submit"]'
+      ];
+
+      let loginClicked = false;
+      for (const selector of loginButtonSelectors) {
+        try {
+          if (selector.includes(':contains')) {
+            // Handle text-based selector
+            const buttons = await page.$$('button');
+            for (const button of buttons) {
+              const text = await page.evaluate(el => el.textContent, button);
+              if (text?.toLowerCase().includes('log in')) {
+                await Promise.all([
+                  page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }),
+                  button.click()
+                ]);
+                loginClicked = true;
+                break;
+              }
+            }
+          } else {
+            // Handle CSS selector
+            const element = await page.$(selector);
+            if (element) {
+              await Promise.all([
+                page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }),
+                element.click()
+              ]);
+              loginClicked = true;
+              break;
+            }
+          }
+          
+          if (loginClicked) break;
+        } catch (error) {
+          logger.debug(`Login button selector failed: ${selector}`);
+          continue;
+        }
+      }
+
+      if (!loginClicked) {
+        throw new Error('Could not find or click login button');
+      }
+
+      // Verify login success
+      const currentUrl = page.url();
+      logger.info(`Post-login URL: ${currentUrl}`);
+
+      // Check for common login failure indicators
+      if (currentUrl.includes('login') || currentUrl.includes('signin')) {
+        // Check for error messages
+        const errorElements = await page.$$('.error, .alert-danger, [role="alert"]');
+        if (errorElements.length > 0) {
+          const errorText = await page.evaluate(
+            el => el.textContent, 
+            errorElements[0]
+          );
+          throw new Error(`Login failed: ${errorText}`);
+        }
+        throw new Error('Login failed - still on login page');
+      }
+
+      // Extract session cookies
       const cookies = await page.cookies();
       this.sessionCookies = cookies
         .map(cookie => `${cookie.name}=${cookie.value}`)
         .join('; ');
 
       this.isLoggedIn = true;
-      logger.info('Successfully logged into Weather.com');
+      logger.info(`✅ Successfully logged into Weather.com! Got ${cookies.length} session cookies`);
       return true;
+
     } catch (error) {
-      logger.error('Failed to login to Weather.com:', error);
+      logger.error('❌ Weather.com login failed:', error);
       this.isLoggedIn = false;
       return false;
     } finally {
@@ -86,13 +193,21 @@ class WeatherScraperService {
   }
 
   async scrapeCity(cityName: string): Promise<WeatherData> {
+    const startTime = Date.now();
+    logger.info(`🌤️  Scraping ${cityName} ${this.isLoggedIn ? '(authenticated)' : '(public)'}`);
+    
     try {
       if (this.isLoggedIn && this.sessionCookies) {
-        return await this.scrapeWithSession(cityName);
+        const result = await this.scrapeWithSession(cityName);
+        logger.info(`✅ ${cityName}: ${result.temperature}°C, ${result.weather_condition} (${Date.now() - startTime}ms)`);
+        return result;
       }
-      return await this.scrapeWithoutLogin(cityName);
+      
+      const result = await this.scrapeWithoutLogin(cityName);
+      logger.info(`✅ ${cityName}: ${result.temperature}°C, ${result.weather_condition} (${Date.now() - startTime}ms)`);
+      return result;
     } catch (error) {
-      logger.error(`Failed to scrape weather for ${cityName}:`, error);
+      logger.error(`❌ Failed to scrape ${cityName}:`, error);
       return {
         city: cityName,
         temperature: null,
@@ -122,12 +237,11 @@ class WeatherScraperService {
         timeout: 30000 
       });
 
-      // FIXED: Use Puppeteer's built-in methods instead of page.evaluate
-      // This avoids the document object TypeScript error entirely
+      // Extract weather data using Puppeteer's native methods
       let temperature: number | null = null;
       let condition = 'unknown';
 
-      // Extract temperature using Puppeteer's page methods
+      // Extract temperature
       for (const selector of TEMP_SELECTORS) {
         try {
           const tempElement = await page.$(selector);
@@ -142,12 +256,11 @@ class WeatherScraperService {
             }
           }
         } catch (error) {
-          // Continue to next selector if this one fails
           continue;
         }
       }
 
-      // Extract condition using Puppeteer's page methods
+      // Extract condition
       for (const selector of CONDITION_SELECTORS) {
         try {
           const condElement = await page.$(selector);
@@ -159,7 +272,6 @@ class WeatherScraperService {
             }
           }
         } catch (error) {
-          // Continue to next selector if this one fails
           continue;
         }
       }
@@ -180,15 +292,15 @@ class WeatherScraperService {
 
     const response = await axios.get(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Connection': 'keep-alive',
       },
       timeout: 30000,
     });
 
-    console.log('Response Status:', response.status);
     const $ = cheerio.load(response.data);
-
-    // Reuse the same extraction logic for both methods
     const temperature = this.extractTemperature($);
     const condition = this.extractCondition($);
 
@@ -199,7 +311,6 @@ class WeatherScraperService {
     };
   }
 
-  // Extracted common temperature extraction logic
   private extractTemperature($: cheerio.CheerioAPI): number | null {
     for (const selector of TEMP_SELECTORS) {
       const tempText = $(selector).first().text();
@@ -213,7 +324,6 @@ class WeatherScraperService {
     return null;
   }
 
-  // Extracted common condition extraction logic
   private extractCondition($: cheerio.CheerioAPI): string {
     for (const selector of CONDITION_SELECTORS) {
       const condText = $(selector).first().text().trim();
@@ -236,8 +346,8 @@ class WeatherScraperService {
         const weatherData = await this.scrapeCity(city);
         results.push(weatherData);
         
-        // Add delay between requests to be respectful
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        // Add delay between requests
+        await new Promise(resolve => setTimeout(resolve, 1500));
       } catch (error) {
         logger.error(`Failed to scrape ${city}:`, error);
         results.push({
@@ -248,6 +358,9 @@ class WeatherScraperService {
       }
     }
 
+    const successRate = results.filter(r => r.temperature !== null).length;
+    logger.info(`🎯 Scraping complete: ${successRate}/${cities.length} cities successful`);
+    
     return results;
   }
 
