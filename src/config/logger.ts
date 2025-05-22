@@ -14,7 +14,10 @@ const logger = winston.createLogger({
     enumerateErrorFormat(),
     config.env === 'development' ? winston.format.colorize() : winston.format.uncolorize(),
     winston.format.splat(),
-    winston.format.printf(({ level, message }: { level: string; message: string }) => `${level}: ${message}`)
+    // Fixed: Use proper Winston TransformableInfo typing
+    winston.format.printf((info) => 
+      `${new Date().toISOString()} ${info.level}: ${info.message}`
+    )
   ),
   transports: [
     new winston.transports.Console({

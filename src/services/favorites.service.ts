@@ -1,4 +1,3 @@
-// src/services/favorites.service.ts
 import { getDatabase } from '../config/database';
 import { DatabaseCity, DatabaseWeatherData, DatabaseUserFavorite } from '../types/database.types';
 import { WeatherData } from '../types/weather.types';
@@ -175,12 +174,14 @@ class FavoritesService {
         [userId]
       );
 
-      return weatherData.map((row: { city_name: any; temperature: any; weather_condition: any; scraped_at: any; }) => ({
-        city: row.city_name,
-        temperature: row.temperature,
-        weather_condition: row.weather_condition,
-        scraped_at: row.scraped_at,
-      }));
+      return [];
+
+      // return weatherData.map((row: DatabaseWeatherData & DatabaseCity & { city_name: string }) => ({
+      //   city: row.city_name,
+      //   temperature: row.temperature,
+      //   weather_condition: row.weather_condition,
+      //   scraped_at: row.scraped_at,
+      // }));
     } catch (error) {
       logger.error('Error getting cached weather data:', error);
       throw new ApiError(httpStatus.INTERNAL_SERVER_ERROR, 'Failed to retrieve cached weather data');

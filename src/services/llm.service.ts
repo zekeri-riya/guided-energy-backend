@@ -1,4 +1,3 @@
-// src/services/llm.service.ts
 import OpenAI from 'openai';
 import config from '../config/config';
 import { WeatherData, WeatherSummary, WeatherAnswer } from '../types/weather.types';

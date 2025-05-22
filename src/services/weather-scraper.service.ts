@@ -1,17 +1,38 @@
 // src/services/weather-scraper.service.ts
 import puppeteer, { Browser, Page } from 'puppeteer';
-import cheerio from 'cheerio';
+import * as cheerio from 'cheerio';
 import axios from 'axios';
 import config from '../config/config';
 import logger from '../config/logger';
 import { WeatherData } from '../types/weather.types';
 
+// Extracted constants to reduce duplication
+const TEMP_SELECTORS = [
+  '[data-testid="TemperatureValue"]',
+  '.CurrentConditions--tempValue--MHmYY',
+  '.today-daypart-temp',
+  '[data-testid="wxTempLabel"]',
+];
+
+const CONDITION_SELECTORS = [
+  '[data-testid="WeatherConditions"]',
+  '.CurrentConditions--phraseValue--mZC_p',
+  '.today-daypart-wxphrase',
+  '[data-testid="wxPhrase"]',
+];
+
+const CITY_MAPPINGS: Record<string, string> = {
+  london: 'UKXX0085:1:UK',
+  birmingham: 'UKXX0016:1:UK',
+  manchester: 'UKXX0095:1:UK',
+  glasgow: 'UKXX0061:1:UK',
+  leeds: 'UKXX0084:1:UK',
+};
+
 class WeatherScraperService {
   private browser: Browser | null = null;
   private sessionCookies: string | null = null;
   private isLoggedIn: boolean = false;
-
-  constructor() {}
 
   async init(): Promise<void> {
     if (!this.browser) {
@@ -30,30 +51,23 @@ class WeatherScraperService {
     }
 
     if (!this.browser) await this.init();
-
     const page = await this.browser!.newPage();
 
     try {
-      // Navigate to login page
       await page.goto('https://weather.com/signin', {
         waitUntil: 'networkidle2',
         timeout: 30000,
       });
 
-      // Wait for login form
       await page.waitForSelector('#email', { timeout: 10000 });
-
-      // Fill login form
       await page.type('#email', config.weatherCom.username!);
       await page.type('#password', config.weatherCom.password!);
 
-      // Submit form
       await Promise.all([
         page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }),
         page.click('button[type="submit"]'),
       ]);
 
-      // Extract session cookies
       const cookies = await page.cookies();
       this.sessionCookies = cookies
         .map(cookie => `${cookie.name}=${cookie.value}`)
@@ -73,12 +87,9 @@ class WeatherScraperService {
 
   async scrapeCity(cityName: string): Promise<WeatherData> {
     try {
-      // Try with session cookies first if logged in
       if (this.isLoggedIn && this.sessionCookies) {
         return await this.scrapeWithSession(cityName);
       }
-
-      // Fallback to scraping without login
       return await this.scrapeWithoutLogin(cityName);
     } catch (error) {
       logger.error(`Failed to scrape weather for ${cityName}:`, error);
@@ -92,7 +103,6 @@ class WeatherScraperService {
 
   private async scrapeWithSession(cityName: string): Promise<WeatherData> {
     if (!this.browser) await this.init();
-
     const page = await this.browser!.newPage();
 
     try {
@@ -104,7 +114,6 @@ class WeatherScraperService {
 
       await page.setCookie(...cookieObjects);
 
-      // Navigate to city weather page
       const cityCode = this.getCityCode(cityName);
       const weatherUrl = `https://weather.com/weather/today/l/${cityCode}`;
       
@@ -113,107 +122,45 @@ class WeatherScraperService {
         timeout: 30000 
       });
 
-      // Extract weather data
-      const weatherData = await page.evaluate(() => {
-        const tempSelectors = [
-          '[data-testid="TemperatureValue"]',
-          '.CurrentConditions--tempValue--MHmYY',
-          '.today-daypart-temp',
-          '[data-testid="wxTempLabel"]',
-        ];
+      // FIXED: Use Puppeteer's built-in methods instead of page.evaluate
+      // This avoids the document object TypeScript error entirely
+      let temperature: number | null = null;
+      let condition = 'unknown';
 
-        const conditionSelectors = [
-          '[data-testid="WeatherConditions"]',
-          '.CurrentConditions--phraseValue--mZC_p',
-          '.today-daypart-wxphrase',
-          '[data-testid="wxPhrase"]',
-        ];
-
-        let temperature: number | null = null;
-        let condition = 'unknown';
-
-        // Try to find temperature
-        for (const selector of tempSelectors) {
-          const tempElement = document.querySelector(selector);
+      // Extract temperature using Puppeteer's page methods
+      for (const selector of TEMP_SELECTORS) {
+        try {
+          const tempElement = await page.$(selector);
           if (tempElement) {
-            const tempText = tempElement.textContent?.replace(/[^\d-]/g, '') || '';
+            const tempText = await page.evaluate(el => el?.textContent, tempElement);
             if (tempText) {
-              temperature = parseInt(tempText);
-              break;
+              const tempNum = parseInt(tempText.replace(/[^\d-]/g, ''));
+              if (!isNaN(tempNum)) {
+                temperature = tempNum;
+                break;
+              }
             }
           }
-        }
-
-        // Try to find condition
-        for (const selector of conditionSelectors) {
-          const condElement = document.querySelector(selector);
-          if (condElement && condElement.textContent) {
-            condition = condElement.textContent.trim().toLowerCase();
-            break;
-          }
-        }
-
-        return { temperature, condition };
-      });
-
-      return {
-        city: cityName,
-        temperature: weatherData.temperature,
-        weather_condition: weatherData.condition,
-      };
-    } finally {
-      await page.close();
-    }
-  }
-
-  private async scrapeWithoutLogin(cityName: string): Promise<WeatherData> {
-    try {
-      const cityCode = this.getCityCode(cityName);
-      const url = `https://weather.com/weather/today/l/${cityCode}`;
-
-      const response = await axios.get(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        },
-        timeout: 30000,
-      });
-
-      const $ = cheerio.load(response.data);
-
-      // Extract temperature
-      let temperature: number | null = null;
-      const tempSelectors = [
-        '[data-testid="TemperatureValue"]',
-        '.CurrentConditions--tempValue--MHmYY',
-        '.today-daypart-temp',
-        '[data-testid="wxTempLabel"]',
-      ];
-
-      for (const selector of tempSelectors) {
-        const tempText = $(selector).first().text();
-        if (tempText) {
-          const tempNum = parseInt(tempText.replace(/[^\d-]/g, ''));
-          if (!isNaN(tempNum)) {
-            temperature = tempNum;
-            break;
-          }
+        } catch (error) {
+          // Continue to next selector if this one fails
+          continue;
         }
       }
 
-      // Extract weather condition
-      let condition = 'unknown';
-      const conditionSelectors = [
-        '[data-testid="WeatherConditions"]',
-        '.CurrentConditions--phraseValue--mZC_p',
-        '.today-daypart-wxphrase',
-        '[data-testid="wxPhrase"]',
-      ];
-
-      for (const selector of conditionSelectors) {
-        const condText = $(selector).first().text().trim();
-        if (condText) {
-          condition = condText.toLowerCase();
-          break;
+      // Extract condition using Puppeteer's page methods
+      for (const selector of CONDITION_SELECTORS) {
+        try {
+          const condElement = await page.$(selector);
+          if (condElement) {
+            const condText = await page.evaluate(el => el?.textContent, condElement);
+            if (condText?.trim()) {
+              condition = condText.trim().toLowerCase();
+              break;
+            }
+          }
+        } catch (error) {
+          // Continue to next selector if this one fails
+          continue;
         }
       }
 
@@ -222,34 +169,74 @@ class WeatherScraperService {
         temperature,
         weather_condition: condition,
       };
-    } catch (error) {
-      logger.error(`Direct scraping failed for ${cityName}:`, error);
-      throw error;
+    } finally {
+      await page.close();
     }
   }
 
-  private getCityCode(cityName: string): string {
-    const cityMappings: Record<string, string> = {
-      london: 'UKXX0085:1:UK',
-      birmingham: 'UKXX0016:1:UK',
-      manchester: 'UKXX0095:1:UK',
-      glasgow: 'UKXX0061:1:UK',
-      leeds: 'UKXX0084:1:UK',
-    };
+  private async scrapeWithoutLogin(cityName: string): Promise<WeatherData> {
+    const cityCode = this.getCityCode(cityName);
+    const url = `https://weather.com/weather/today/l/${cityCode}`;
 
-    return cityMappings[cityName.toLowerCase()] || `${cityName.toUpperCase()}:1:UK`;
+    const response = await axios.get(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+      },
+      timeout: 30000,
+    });
+
+    console.log('Response Status:', response.status);
+    const $ = cheerio.load(response.data);
+
+    // Reuse the same extraction logic for both methods
+    const temperature = this.extractTemperature($);
+    const condition = this.extractCondition($);
+
+    return {
+      city: cityName,
+      temperature,
+      weather_condition: condition,
+    };
+  }
+
+  // Extracted common temperature extraction logic
+  private extractTemperature($: cheerio.CheerioAPI): number | null {
+    for (const selector of TEMP_SELECTORS) {
+      const tempText = $(selector).first().text();
+      if (tempText) {
+        const tempNum = parseInt(tempText.replace(/[^\d-]/g, ''));
+        if (!isNaN(tempNum)) {
+          return tempNum;
+        }
+      }
+    }
+    return null;
+  }
+
+  // Extracted common condition extraction logic
+  private extractCondition($: cheerio.CheerioAPI): string {
+    for (const selector of CONDITION_SELECTORS) {
+      const condText = $(selector).first().text().trim();
+      if (condText) {
+        return condText.toLowerCase();
+      }
+    }
+    return 'unknown';
+  }
+
+  private getCityCode(cityName: string): string {
+    return CITY_MAPPINGS[cityName.toLowerCase()] || `${cityName.toUpperCase()}:1:UK`;
   }
 
   async scrapeMultipleCities(cities: string[]): Promise<WeatherData[]> {
     const results: WeatherData[] = [];
     
-    // Process cities sequentially to avoid overwhelming the server
     for (const city of cities) {
       try {
         const weatherData = await this.scrapeCity(city);
         results.push(weatherData);
         
-        // Add delay between requests
+        // Add delay between requests to be respectful
         await new Promise(resolve => setTimeout(resolve, 1000));
       } catch (error) {
         logger.error(`Failed to scrape ${city}:`, error);
