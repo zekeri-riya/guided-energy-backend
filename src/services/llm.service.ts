@@ -7,11 +7,12 @@ import httpStatus from 'http-status';
 import logger from '../config/logger';
 
 class LLMService {
-  private openai: OpenAI;
+  private openai: OpenAI | null;
 
   constructor() {
     if (!config.openai.apiKey) {
       logger.warn('OpenAI API key not provided. LLM features will be disabled.');
+      this.openai = null;
       return;
     }
 
@@ -21,11 +22,11 @@ class LLMService {
   }
 
   private isAvailable(): boolean {
-    return !!this.openai;
+    return this.openai !== null;
   }
 
   async generateWeatherSummary(weatherData: WeatherData[]): Promise<WeatherSummary> {
-    if (!this.isAvailable()) {
+    if (!this.isAvailable() || !this.openai) {
       throw new ApiError(httpStatus.SERVICE_UNAVAILABLE, 'LLM service not available');
     }
 
@@ -78,7 +79,7 @@ Provide a brief summary that highlights the key weather patterns across these ci
   }
 
   async answerWeatherQuestion(question: string, weatherData: WeatherData[]): Promise<WeatherAnswer> {
-    if (!this.isAvailable()) {
+    if (!this.isAvailable() || !this.openai) {
       throw new ApiError(httpStatus.SERVICE_UNAVAILABLE, 'LLM service not available');
     }
 

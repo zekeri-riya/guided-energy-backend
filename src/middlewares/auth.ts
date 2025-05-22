@@ -4,7 +4,7 @@ import authService from '../services/auth.service';
 import ApiError from '../utils/ApiError';
 import httpStatus from 'http-status';
 
-const authenticate = async (req: AuthRequest, res: Response, next: NextFunction) => {
+const authenticate: any = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const authHeader = req.headers.authorization;
     
