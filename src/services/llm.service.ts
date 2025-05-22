@@ -1,31 +1,97 @@
-import OpenAI from 'openai';
+import { OpenAI } from 'openai';
+import * as dotenv from 'dotenv';
 import config from '../config/config';
 import { WeatherData, WeatherSummary, WeatherAnswer } from '../types/weather.types';
 import ApiError from '../utils/ApiError';
 import httpStatus from 'http-status';
 import logger from '../config/logger';
+import { ChatCompletionTool } from 'openai/resources/chat/completions';
 
-class LLMService {
-  private openai: OpenAI | null;
+dotenv.config();
 
-  constructor() {
-    if (!config.openai.apiKey) {
+const weatherAnalysisTools: ChatCompletionTool[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'generate_weather_summary',
+      description: 'Generate a natural weather summary from weather data',
+      parameters: {
+        type: 'object',
+        properties: {
+          summary: {
+            type: 'string',
+            description: 'Concise, friendly weather summary highlighting key patterns'
+          },
+          temperatureRange: {
+            type: 'object',
+            properties: {
+              min: { type: 'number' },
+              max: { type: 'number' }
+            },
+            description: 'Temperature range across all cities'
+          },
+          dominantCondition: {
+            type: 'string',
+            description: 'Most common weather condition'
+          }
+        },
+        required: ['summary', 'temperatureRange', 'dominantCondition']
+      }
+    }
+  }
+];
+
+const weatherQuestionTools: ChatCompletionTool[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'answer_weather_question',
+      description: 'Answer weather questions and identify matching cities',
+      parameters: {
+        type: 'object',
+        properties: {
+          answer: {
+            type: 'string',
+            description: 'Helpful answer to the weather question'
+          },
+          matchingCities: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Cities that match the user criteria'
+          },
+          confidence: {
+            type: 'string',
+            enum: ['high', 'medium', 'low'],
+            description: 'Confidence level in the answer'
+          }
+        },
+        required: ['answer', 'matchingCities', 'confidence']
+      }
+    }
+  }
+];
+
+export class LLMService {
+  private client: OpenAI | null;
+
+  constructor(apiKey?: string) {
+    const key = apiKey || config.openai?.apiKey || process.env.OPENAI_API_KEY;
+    
+    if (!key) {
       logger.warn('OpenAI API key not provided. LLM features will be disabled.');
-      this.openai = null;
+      this.client = null;
       return;
     }
-
-    this.openai = new OpenAI({
-      apiKey: config.openai.apiKey,
-    });
+    
+    this.client = new OpenAI({ apiKey: key });
   }
 
   private isAvailable(): boolean {
-    return this.openai !== null;
+    return this.client !== null;
   }
 
   async generateWeatherSummary(weatherData: WeatherData[]): Promise<WeatherSummary> {
-    if (!this.isAvailable() || !this.openai) {
+    if (!this.isAvailable() || !this.client) {
       throw new ApiError(httpStatus.SERVICE_UNAVAILABLE, 'LLM service not available');
     }
 
@@ -33,44 +99,46 @@ class LLMService {
       return { summary: 'No weather data available.' };
     }
 
+    const systemMessage = `You are a helpful weather assistant. Generate natural, conversational weather summaries.
+    Focus on key patterns, temperature ranges, and general conditions across cities.
+    Be concise, friendly, and highlight the most important weather insights.`;
+
     try {
-      const weatherText = weatherData
-        .map(data => {
-          const temp = data.temperature !== null ? `${data.temperature}°C` : 'unknown temperature';
-          return `${data.city}: ${temp}, ${data.weather_condition}`;
-        })
-        .join('; ');
+      const weatherContext = this.formatWeatherData(weatherData);
+      
+      const prompt = `Analyze this weather data and provide a comprehensive summary:
 
-      const prompt = `Summarize the following weather data in a natural, conversational way. Be concise and friendly:
+Weather Data:
+${weatherContext}
 
-${weatherText}
+Generate a natural summary that highlights:
+1. Overall weather patterns
+2. Temperature ranges
+3. Dominant conditions
+4. Any notable weather variations`;
 
-Provide a brief summary that highlights the key weather patterns across these cities.`;
-
-      const completion = await this.openai.chat.completions.create({
-        model: 'gpt-3.5-turbo',
+      const completion = await this.client.chat.completions.create({
+        model: "gpt-4o-mini",
         messages: [
-          {
-            role: 'system',
-            content: 'You are a helpful weather assistant. Provide concise, natural summaries of weather conditions.',
-          },
-          {
-            role: 'user',
-            content: prompt,
-          },
+          { role: "system", content: systemMessage },
+          { role: "user", content: prompt }
         ],
-        max_tokens: 150,
-        temperature: 0.7,
+        tools: weatherAnalysisTools,
+        tool_choice: { type: "function", function: { name: "generate_weather_summary" } },
       });
 
-      const summary = completion.choices[0]?.message?.content?.trim();
-      
-      if (!summary) {
-        throw new Error('No summary generated');
+      if (completion.choices[0].message.tool_calls) {
+        const toolCall = completion.choices[0].message.tool_calls[0];
+        if (toolCall.type === 'function' && toolCall.function.name === 'generate_weather_summary') {
+          const result = JSON.parse(toolCall.function.arguments);
+          
+          logger.info('Weather summary generated successfully');
+          return { summary: result.summary };
+        }
       }
 
-      logger.info('Weather summary generated successfully');
-      return { summary };
+      throw new Error('Failed to generate weather summary');
+
     } catch (error) {
       logger.error('Error generating weather summary:', error);
       throw new ApiError(httpStatus.INTERNAL_SERVER_ERROR, 'Failed to generate weather summary');
@@ -78,7 +146,7 @@ Provide a brief summary that highlights the key weather patterns across these ci
   }
 
   async answerWeatherQuestion(question: string, weatherData: WeatherData[]): Promise<WeatherAnswer> {
-    if (!this.isAvailable() || !this.openai) {
+    if (!this.isAvailable() || !this.client) {
       throw new ApiError(httpStatus.SERVICE_UNAVAILABLE, 'LLM service not available');
     }
 
@@ -89,119 +157,130 @@ Provide a brief summary that highlights the key weather patterns across these ci
       };
     }
 
-    try {
-      const weatherText = weatherData
-        .map(data => {
-          const temp = data.temperature !== null ? `${data.temperature}°C` : 'unknown temperature';
-          return `${data.city}: ${temp}, ${data.weather_condition}`;
-        })
-        .join('\n');
+    const systemMessage = `You are a helpful weather assistant. Answer weather questions accurately based on provided data.
+    Identify cities that match the user's criteria and provide clear, helpful responses.
+    Always specify which cities match when relevant.`;
 
-      const prompt = `Based on the following weather data, answer the user's question and identify which cities match their criteria.
+    try {
+      const weatherContext = this.formatWeatherData(weatherData);
+      
+      const prompt = `Based on this weather data, answer the user's question and identify matching cities:
 
 Weather Data:
-${weatherText}
+${weatherContext}
 
 User Question: ${question}
 
-Please provide:
-1. A helpful answer to their question
-2. A list of city names that match their criteria (if any)
+Provide:
+1. A helpful, accurate answer
+2. List of cities that match their criteria
+3. Your confidence in the answer`;
 
-Format your response as JSON with "answer" and "matchingCities" fields. The matchingCities should be an array of city names.`;
-
-      const completion = await this.openai.chat.completions.create({
-        model: 'gpt-3.5-turbo',
+      const completion = await this.client.chat.completions.create({
+        model: "gpt-4o-mini",
         messages: [
-          {
-            role: 'system',
-            content: 'You are a helpful weather assistant. Answer questions about weather data and identify matching cities. Always respond with valid JSON containing "answer" and "matchingCities" fields.',
-          },
-          {
-            role: 'user',
-            content: prompt,
-          },
+          { role: "system", content: systemMessage },
+          { role: "user", content: prompt }
         ],
-        max_tokens: 200,
-        temperature: 0.3,
+        tools: weatherQuestionTools,
+        tool_choice: { type: "function", function: { name: "answer_weather_question" } },
       });
 
-      const responseText = completion.choices[0]?.message?.content?.trim();
-      
-      if (!responseText) {
-        throw new Error('No response generated');
-      }
+      if (completion.choices[0].message.tool_calls) {
+        const toolCall = completion.choices[0].message.tool_calls[0];
+        if (toolCall.type === 'function' && toolCall.function.name === 'answer_weather_question') {
+          const result = JSON.parse(toolCall.function.arguments);
+          
+          const availableCities = weatherData.map(data => data.city.toLowerCase());
+          const validMatchingCities = result.matchingCities.filter((city: string) =>
+            availableCities.includes(city.toLowerCase())
+          );
 
-      try {
-        const parsed = JSON.parse(responseText);
-        
-        // Validate the response structure
-        if (!parsed.answer || !Array.isArray(parsed.matchingCities)) {
-          throw new Error('Invalid response structure');
+          logger.info('Weather question answered successfully');
+          return {
+            answer: result.answer,
+            matchingCities: validMatchingCities,
+          };
         }
-
-        // Ensure matching cities exist in our data
-        const availableCities = weatherData.map(data => data.city.toLowerCase());
-        const validMatchingCities = parsed.matchingCities.filter((city: string) =>
-          availableCities.includes(city.toLowerCase())
-        );
-
-        logger.info('Weather question answered successfully');
-        return {
-          answer: parsed.answer,
-          matchingCities: validMatchingCities,
-        };
-      } catch (parseError) {
-        logger.warn('Failed to parse JSON response, extracting answer manually');
-        
-        // Fallback: Extract answer manually and guess matching cities
-        const matchingCities = this.extractMatchingCities(question, weatherData);
-        
-        return {
-          answer: responseText,
-          matchingCities,
-        };
       }
+
+      throw new Error('Failed to answer weather question');
+
     } catch (error) {
       logger.error('Error answering weather question:', error);
-      throw new ApiError(httpStatus.INTERNAL_SERVER_ERROR, 'Failed to answer weather question');
+      
+      const matchingCities = this.extractMatchingCities(question, weatherData);
+      
+      return {
+        answer: 'I can help with basic weather information, but had trouble processing your specific question.',
+        matchingCities,
+      };
     }
   }
 
+  /**
+   * Format weather data for consistent prompt input
+   */
+  private formatWeatherData(weatherData: WeatherData[]): string {
+    return weatherData
+      .map(data => {
+        const temp = data.temperature !== null ? `${data.temperature}°C` : 'unknown temperature';
+        return `${data.city}: ${temp}, ${data.weather_condition}`;
+      })
+      .join('\n');
+  }
+
+  /**
+   * Fallback method for simple keyword-based city matching
+   */
   private extractMatchingCities(question: string, weatherData: WeatherData[]): string[] {
     const questionLower = question.toLowerCase();
     const matchingCities: string[] = [];
 
-    // Simple keyword matching for common weather questions
-    const sunnyKeywords = ['sunny', 'sun', 'clear', 'bright'];
-    const rainyKeywords = ['rain', 'rainy', 'wet', 'drizzle'];
-    const cloudyKeywords = ['cloudy', 'overcast', 'grey', 'gray'];
-    const warmKeywords = ['warm', 'hot', 'high temperature'];
-    const coldKeywords = ['cold', 'cool', 'low temperature', 'chilly'];
+    // Simple keyword matching patterns
+    const patterns = {
+      sunny: ['sunny', 'sun', 'clear', 'bright'],
+      rainy: ['rain', 'rainy', 'wet', 'drizzle'],
+      cloudy: ['cloudy', 'overcast', 'grey', 'gray'],
+      warm: ['warm', 'hot', 'high temperature'],
+      cold: ['cold', 'cool', 'low temperature', 'chilly']
+    };
 
     for (const data of weatherData) {
       const condition = data.weather_condition.toLowerCase();
       
-      if (sunnyKeywords.some(keyword => questionLower.includes(keyword)) &&
-          sunnyKeywords.some(keyword => condition.includes(keyword))) {
+      // Check condition keywords
+      if (this.matchesKeywords(questionLower, patterns.sunny) && 
+          this.matchesKeywords(condition, patterns.sunny)) {
         matchingCities.push(data.city);
-      } else if (rainyKeywords.some(keyword => questionLower.includes(keyword)) &&
-                rainyKeywords.some(keyword => condition.includes(keyword))) {
+      } else if (this.matchesKeywords(questionLower, patterns.rainy) && 
+                this.matchesKeywords(condition, patterns.rainy)) {
         matchingCities.push(data.city);
-      } else if (cloudyKeywords.some(keyword => questionLower.includes(keyword)) &&
-                cloudyKeywords.some(keyword => condition.includes(keyword))) {
+      } else if (this.matchesKeywords(questionLower, patterns.cloudy) && 
+                this.matchesKeywords(condition, patterns.cloudy)) {
         matchingCities.push(data.city);
-      } else if (warmKeywords.some(keyword => questionLower.includes(keyword)) &&
-                data.temperature !== null && data.temperature > 20) {
-        matchingCities.push(data.city);
-      } else if (coldKeywords.some(keyword => questionLower.includes(keyword)) &&
-                data.temperature !== null && data.temperature < 10) {
-        matchingCities.push(data.city);
+      }
+      
+      // Check temperature-based keywords
+      if (data.temperature !== null) {
+        if (this.matchesKeywords(questionLower, patterns.warm) && data.temperature > 20) {
+          matchingCities.push(data.city);
+        } else if (this.matchesKeywords(questionLower, patterns.cold) && data.temperature < 10) {
+          matchingCities.push(data.city);
+        }
       }
     }
 
-    return matchingCities;
+    return [...new Set(matchingCities)]; // Remove duplicates
+  }
+
+  /**
+   * Helper method to check if text matches any keywords
+   */
+  private matchesKeywords(text: string, keywords: string[]): boolean {
+    return keywords.some(keyword => text.includes(keyword));
   }
 }
 
+// Export singleton instance following the original pattern
 export default new LLMService();

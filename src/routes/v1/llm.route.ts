@@ -15,7 +15,7 @@ const askQuestionSchema = {
 };
 
 // All LLM routes require authentication
-// router.use(authenticate);
+router.use(authenticate);
 
 router.get('/summary', llmController.getSummary);
 router.post('/ask', validate(askQuestionSchema), llmController.askQuestion);

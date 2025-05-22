@@ -174,14 +174,12 @@ class FavoritesService {
         [userId]
       );
 
-      return [];
-
-      // return weatherData.map((row: DatabaseWeatherData & DatabaseCity & { city_name: string }) => ({
-      //   city: row.city_name,
-      //   temperature: row.temperature,
-      //   weather_condition: row.weather_condition,
-      //   scraped_at: row.scraped_at,
-      // }));
+      return weatherData.map((row: DatabaseWeatherData & DatabaseCity & { city_name: string }) => ({
+        city: row.city_name,
+        temperature: row.temperature,
+        weather_condition: row.weather_condition,
+        scraped_at: row.scraped_at,
+      }));
     } catch (error) {
       logger.error('Error getting cached weather data:', error);
       throw new ApiError(httpStatus.INTERNAL_SERVER_ERROR, 'Failed to retrieve cached weather data');
