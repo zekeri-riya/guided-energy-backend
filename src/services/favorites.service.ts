@@ -6,6 +6,11 @@ import ApiError from '../utils/ApiError';
 import httpStatus from 'http-status';
 import logger from '../config/logger';
 
+// Type for the joined query result
+interface WeatherDataWithCity extends DatabaseWeatherData {
+  city_name: string;
+}
+
 class FavoritesService {
   async addFavoriteCities(userId: number, cityNames: string[]): Promise<void> {
     const db = getDatabase();
@@ -163,7 +168,7 @@ class FavoritesService {
     const db = getDatabase();
 
     try {
-      const weatherData = await db.all<(DatabaseWeatherData & DatabaseCity)[]>(
+      const weatherData = await db.all<WeatherDataWithCity[]>(
         `SELECT wd.*, c.name as city_name
          FROM weather_data wd
          INNER JOIN cities c ON wd.city_id = c.id
@@ -174,7 +179,7 @@ class FavoritesService {
         [userId]
       );
 
-      return weatherData.map((row: DatabaseWeatherData & DatabaseCity & { city_name: string }) => ({
+      return weatherData.map((row) => ({
         city: row.city_name,
         temperature: row.temperature,
         weather_condition: row.weather_condition,
