@@ -5,6 +5,7 @@ import catchAsync from '../utils/catchAsync';
 
 const getWeatherForCity: any = catchAsync(async (req: Request, res: Response) => {
   const { cityName } = req.params;
+  console.log('City Name:', cityName);
   const weatherData = await weatherScraperService.scrapeCity(cityName);
   
   res.status(httpStatus.OK).send({

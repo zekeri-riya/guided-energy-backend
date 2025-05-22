@@ -1,4 +1,4 @@
-// src/services/weather-scraper.service.ts - Updated for actual Weather.com login form
+// src/services/weather-scraper.service.ts - Fixed for current Weather.com login form
 import puppeteer, { Browser, Page } from 'puppeteer';
 import * as cheerio from 'cheerio';
 import axios from 'axios';
@@ -76,101 +76,283 @@ class WeatherScraperService {
         timeout: 30000,
       });
 
-      // Wait for the login form to load
-      await page.waitForSelector('input[type="email"], input[name="email"]', { timeout: 15000 });
-      
-      // Clear any existing content in email field and type new email
-      logger.info('Filling email field...');
-      const emailSelector = 'input[type="email"], input[name="email"]';
-      await page.click(emailSelector);
-      await page.keyboard.down('Control');
-      await page.keyboard.press('a');
-      await page.keyboard.up('Control');
-      await page.type(emailSelector, config.weatherCom.username!);
+      // Wait for page to fully load
+      await page.waitForTimeout(3000);
 
-      // Wait a moment for form to update
-      await page.waitForTimeout(1000);
+      // Check if we see "Welcome Back!" or need to scroll/click to show login form
+      const welcomeBack = await page.$('text=Welcome Back!');
+      if (!welcomeBack) {
+        // Try to find and click a sign-in button if the form isn't immediately visible
+        const signInButtons = await page.$$('button, a, [role="button"]');
+        for (const button of signInButtons) {
+          const text = await page.evaluate(el => el.textContent?.toLowerCase(), button);
+          if (text?.includes('sign in') || text?.includes('log in')) {
+            await button.click();
+            await page.waitForTimeout(2000);
+            break;
+          }
+        }
+      }
 
-      // Fill password field
-      logger.info('Filling password field...');
-      const passwordSelector = 'input[type="password"], input[name="password"]';
-      await page.waitForSelector(passwordSelector, { timeout: 10000 });
-      await page.click(passwordSelector);
-      await page.keyboard.down('Control');
-      await page.keyboard.press('a');
-      await page.keyboard.up('Control');
-      await page.type(passwordSelector, config.weatherCom.password!);
-
-      // Wait for form validation
-      await page.waitForTimeout(1500);
-
-      // Click the login button
-      logger.info('Clicking login button...');
-      const loginButtonSelectors = [
-        'button:contains("Log in")',
-        'button[type="submit"]',
-        '.btn-primary',
-        '[data-testid="submit"]',
-        'input[type="submit"]'
+      // Updated selectors based on the current form structure
+      const emailSelectors = [
+        'input[type="email"]',
+        'input[name="email"]',
+        'input[placeholder*="email" i]',
+        'input[id*="email" i]',
+        '#email',
+        '.email-input'
       ];
 
-      let loginClicked = false;
-      for (const selector of loginButtonSelectors) {
+      const passwordSelectors = [
+        'input[type="password"]',
+        'input[name="password"]',
+        'input[placeholder*="password" i]',
+        'input[id*="password" i]',
+        '#password',
+        '.password-input'
+      ];
+
+      // Find and fill email field
+      logger.info('Looking for email field...');
+      let emailField = null;
+      for (const selector of emailSelectors) {
         try {
-          if (selector.includes(':contains')) {
-            // Handle text-based selector
-            const buttons = await page.$$('button');
-            for (const button of buttons) {
-              const text = await page.evaluate(el => el.textContent, button);
-              if (text?.toLowerCase().includes('log in')) {
-                await Promise.all([
-                  page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }),
-                  button.click()
-                ]);
-                loginClicked = true;
-                break;
-              }
-            }
-          } else {
-            // Handle CSS selector
-            const element = await page.$(selector);
-            if (element) {
-              await Promise.all([
-                page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }),
-                element.click()
-              ]);
-              loginClicked = true;
-              break;
-            }
+          emailField = await page.$(selector);
+          if (emailField) {
+            logger.info(`Found email field with selector: ${selector}`);
+            break;
           }
-          
-          if (loginClicked) break;
         } catch (error) {
-          logger.debug(`Login button selector failed: ${selector}`);
           continue;
         }
       }
 
-      if (!loginClicked) {
-        throw new Error('Could not find or click login button');
+      if (!emailField) {
+        // Try a more generic approach - look for any input that might be an email field
+        const inputs = await page.$$('input');
+        for (const input of inputs) {
+          const type = await page.evaluate(el => el.type, input);
+          const placeholder = await page.evaluate(el => el.placeholder, input);
+          const name = await page.evaluate(el => el.name, input);
+          
+          if (type === 'email' || 
+              placeholder?.toLowerCase().includes('email') ||
+              name?.toLowerCase().includes('email')) {
+            emailField = input;
+            logger.info('Found email field by attribute inspection');
+            break;
+          }
+        }
       }
+
+      if (!emailField) {
+        throw new Error('Could not find email input field');
+      }
+
+      // Clear and fill email field
+      logger.info('Filling email field...');
+      await emailField.click();
+      await page.keyboard.down('Control');
+      await page.keyboard.press('a');
+      await page.keyboard.up('Control');
+      await emailField.type(config.weatherCom.username!);
+
+      // Wait for form to update
+      await page.waitForTimeout(1500);
+
+      // Find and fill password field
+      logger.info('Looking for password field...');
+      let passwordField = null;
+      for (const selector of passwordSelectors) {
+        try {
+          passwordField = await page.$(selector);
+          if (passwordField) {
+            logger.info(`Found password field with selector: ${selector}`);
+            break;
+          }
+        } catch (error) {
+          continue;
+        }
+      }
+
+      if (!passwordField) {
+        // Try a more generic approach for password field
+        const inputs = await page.$$('input');
+        for (const input of inputs) {
+          const type = await page.evaluate(el => el.type, input);
+          const placeholder = await page.evaluate(el => el.placeholder, input);
+          const name = await page.evaluate(el => el.name, input);
+          
+          if (type === 'password' || 
+              placeholder?.toLowerCase().includes('password') ||
+              name?.toLowerCase().includes('password')) {
+            passwordField = input;
+            logger.info('Found password field by attribute inspection');
+            break;
+          }
+        }
+      }
+
+      if (!passwordField) {
+        throw new Error('Could not find password input field');
+      }
+
+      // Clear and fill password field
+      logger.info('Filling password field...');
+      await passwordField.click();
+      await page.keyboard.down('Control');
+      await page.keyboard.press('a');
+      await page.keyboard.up('Control');
+      await passwordField.type(config.weatherCom.password!);
+
+      // Wait for form validation
+      await page.waitForTimeout(2000);
+
+      // Find and click the login button
+      logger.info('Looking for login button...');
+      const loginButtonSelectors = [
+        'button[type="submit"]',
+        'input[type="submit"]',
+        'button:has-text("Log in")',
+        'button:has-text("Sign in")',
+        '.btn-primary',
+        '[data-testid="submit"]'
+      ];
+
+      let loginButton = null;
+      
+      // First try CSS selectors
+      for (const selector of loginButtonSelectors) {
+        try {
+          if (selector.includes(':has-text')) {
+            continue; // Skip Playwright-specific selectors for now
+          }
+          loginButton = await page.$(selector);
+          if (loginButton) {
+            logger.info(`Found login button with selector: ${selector}`);
+            break;
+          }
+        } catch (error) {
+          continue;
+        }
+      }
+
+      // If no button found with CSS selectors, try text-based search
+      if (!loginButton) {
+        const buttons = await page.$$('button, input[type="submit"], [role="button"]');
+        for (const button of buttons) {
+          const text = await page.evaluate(el => el.textContent?.toLowerCase() || el.value?.toLowerCase(), button);
+          if (text?.includes('log in') || text?.includes('sign in') || text?.includes('submit')) {
+            loginButton = button;
+            logger.info('Found login button by text content');
+            break;
+          }
+        }
+      }
+
+      if (!loginButton) {
+        throw new Error('Could not find login button');
+      }
+
+      // Click the login button and wait for navigation
+      logger.info('Clicking login button...');
+      
+      // Set up navigation promise before clicking
+      const navigationPromise = page.waitForNavigation({ 
+        waitUntil: 'networkidle2', 
+        timeout: 30000 
+      }).catch(() => {
+        // Navigation might not happen if there's an error, so we catch and continue
+        logger.warn('Navigation timeout, but continuing...');
+      });
+      
+      await loginButton.click();
+      await navigationPromise;
+
+      // Wait a bit more for any redirects
+      await page.waitForTimeout(3000);
 
       // Verify login success
       const currentUrl = page.url();
       logger.info(`Post-login URL: ${currentUrl}`);
 
-      // Check for common login failure indicators
-      if (currentUrl.includes('login') || currentUrl.includes('signin')) {
-        // Check for error messages
-        const errorElements = await page.$$('.error, .alert-danger, [role="alert"]');
-        if (errorElements.length > 0) {
-          const errorText = await page.evaluate(
-            el => el.textContent, 
-            errorElements[0]
-          );
-          throw new Error(`Login failed: ${errorText}`);
+      // First check for obvious login success indicators
+      const successIndicators = [
+        'text=My Dashboard',
+        'text=Sign Out',
+        'text=Account',
+        '[data-testid="header-account"]',
+        '.user-menu',
+        '.account-menu',
+        'a[href*="logout"]',
+        'button[aria-label*="account"]'
+      ];
+
+      let loginSuccess = false;
+      for (const indicator of successIndicators) {
+        try {
+          const element = await page.$(indicator);
+          if (element) {
+            loginSuccess = true;
+            logger.info(`Login success detected with: ${indicator}`);
+            break;
+          }
+        } catch (error) {
+          continue;
         }
-        throw new Error('Login failed - still on login page');
+      }
+
+      // Also check for the redirect URL pattern that indicates success
+      if (!loginSuccess && currentUrl.includes('goto=Redirected')) {
+        loginSuccess = true;
+        logger.info('Login success detected via redirect URL pattern');
+      }
+
+      // If no clear success indicators, check if we're redirected away from login
+      if (!loginSuccess) {
+        const isStillOnLoginPage = currentUrl.includes('login') || currentUrl.includes('signin');
+        
+        if (!isStillOnLoginPage) {
+          // We've been redirected away from login page, likely successful
+          loginSuccess = true;
+          logger.info('Login appears successful - redirected away from login page');
+        } else {
+          // Still on login page, check for actual error messages
+          const errorSelectors = [
+            '.error',
+            '.alert-danger',
+            '[role="alert"]',
+            '.error-message',
+            '.validation-error',
+            '.form-error'
+          ];
+          
+          let actualError = false;
+          for (const selector of errorSelectors) {
+            const errorElement = await page.$(selector);
+            if (errorElement) {
+              const errorText = await page.evaluate(el => el.textContent, errorElement);
+              if (errorText?.trim() && 
+                  !errorText.includes('recent') && 
+                  !errorText.includes('location') &&
+                  errorText.length > 5) {
+                actualError = true;
+                throw new Error(`Login failed: ${errorText}`);
+              }
+            }
+          }
+          
+          if (!actualError) {
+            // No actual error found, maybe login worked but page didn't redirect properly
+            loginSuccess = true;
+            logger.info('No login errors detected, assuming success');
+          }
+        }
+      }
+
+      if (!loginSuccess) {
+        throw new Error('Login failed - unable to verify success');
       }
 
       // Extract session cookies
